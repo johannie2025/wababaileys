@@ -115,18 +115,28 @@ const QRCode = require('qrcode');
 
 // Fix 2 & 3: Route pour générer l'image PNG
 app.get('/channels/:id/qr/image', async (req, res) => {
-    const instance = manager.getInstance(req.params.id);
-    if (!instance || !instance.qrString) {
+    // Utilisez votre gestionnaire de sessions (manager ou sessions)
+    const instance = manager.getInstance(req.params.id); 
+
+    // CORRECTION : Vérifiez 'instance.qr' car c'est ce que vous remplissez 
+    // dans votre gestionnaire d'événements connection.update[cite: 3].
+    if (!instance || !instance.qr) {
+        console.log(`[QR_ROUTE] QR non prêt pour : ${req.params.id}`);
         return res.status(404).json({ error: 'QR not ready' });
     }
 
     try {
+        // Désactiver le cache pour forcer le navigateur à prendre le nouveau QR[cite: 2]
         res.setHeader('Content-Type', 'image/png');
-        await QRCode.toFileStream(res, instance.qrString);
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        
+        // Génère le flux PNG directement vers la réponse[cite: 3]
+        await QRCode.toFileStream(res, instance.qr);
+        console.log(`[QR_ROUTE] Image générée avec succès pour : ${req.params.id}`);
     } catch (err) {
+        console.error(`[QR_ERROR] ${err.message}`);
         res.status(500).send('Error generating QR');
     }
 });
-
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Engine Baileys running on port ${PORT}`));
