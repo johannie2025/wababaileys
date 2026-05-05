@@ -1,0 +1,13 @@
+{
+  "name": "waba-baileys-engine",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "@whiskeysockets/baileys": "latest",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "qrcode": "^1.5.1",
+    "pino": "^8.0.0"
+  }
+}
