@@ -111,5 +111,22 @@ app.patch('/channels/:id/webhook', authMiddleware, async (req, res) => {
     res.json({ _ok: true });
 });
 
+const QRCode = require('qrcode');
+
+// Fix 2 & 3: Route pour générer l'image PNG
+app.get('/channels/:id/qr/image', async (req, res) => {
+    const instance = manager.getInstance(req.params.id);
+    if (!instance || !instance.qrString) {
+        return res.status(404).json({ error: 'QR not ready' });
+    }
+
+    try {
+        res.setHeader('Content-Type', 'image/png');
+        await QRCode.toFileStream(res, instance.qrString);
+    } catch (err) {
+        res.status(500).send('Error generating QR');
+    }
+});
+
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Engine Baileys running on port ${PORT}`));
