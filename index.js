@@ -58,12 +58,19 @@ app.get('/channels/:id/status', authMiddleware, async (req, res) => {
 });
 
 /** GET /channels/:id/qr - Récupérer le code QR brut[cite: 2] */
-app.get('/channels/:id/qr', authMiddleware, (req, res) => {
-    const instance = sessions.get(req.params.id);
-    if (!instance || !instance.qr) {
-        return res.json({ _ok: false, qr: null, message: 'QR not ready or already connected' });
+app.get('/channels/:id/qr', authMiddleware, async (req, res) => {
+    let instance = sessions.get(req.params.id);
+    
+    // Si l'instance n'est pas là, on la réveille aussi ici
+    if (!instance) {
+        instance = await getSession(req.params.id);
     }
-    res.json({ _ok: true, qr: instance.qr }); 
+
+    if (!instance.qr) {
+        return res.json({ _ok: true, qr: null, status: instance.status });
+    }
+    
+    res.json({ _ok: true, qr: instance.qr }); // Ton PHP attend la string 'qr'
 });
 
 /** POST /channels/:id/send - Envoyer un message texte[cite: 2] */
