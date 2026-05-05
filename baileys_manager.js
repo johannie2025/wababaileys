@@ -51,27 +51,45 @@ async function getSession(channelId, webhookUrl = null) {
 
     sessions.set(channelId, instance);
 
-    // Gestion des événements de connexion
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-        
-        if (qr) instance.qr = qr;
+// Gestion des événements de connexion
+sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+    
+    // 1. Détection du QR Code
+    if (qr) {
+        console.log(`[QR] Nouveau code généré pour le canal : ${channelId}`);
+        instance.qr = qr;
+        instance.status = 'connecting'; // On confirme qu'on attend le scan
+    }
 
-        if (connection === 'close') {
-            const statusCode = lastDisconnect.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            
-            instance.status = 'disconnected';
-            if (shouldReconnect) {
-                // Relance propre sans créer de doublon
-                sessions.delete(channelId);
-                getSession(channelId, webhookUrl);
-            }
-        } else if (connection === 'open') {
-            instance.status = 'connected';
-            instance.qr = null;
+    // 2. Gestion des fermetures de connexion
+    if (connection === 'close') {
+        const statusCode = lastDisconnect.error?.output?.statusCode;
+        const reason = lastDisconnect.error?.message || 'Inconnue';
+        
+        console.log(`[CLOSE] Canal ${channelId} fermé. Raison: ${reason} (Code: ${statusCode})`);
+
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        instance.status = 'disconnected';
+        instance.qr = null;
+
+        if (shouldReconnect) {
+            console.log(`[RETRY] Tentative de reconnexion pour : ${channelId}...`);
+            sessions.delete(channelId);
+            // Petit délai pour éviter de saturer le processeur de Render
+            setTimeout(() => getSession(channelId, webhookUrl), 3000);
+        } else {
+            console.log(`[LOGOUT] Déconnexion définitive pour : ${channelId}.`);
         }
-    });
+    } 
+    
+    // 3. Connexion réussie[cite: 3]
+    else if (connection === 'open') {
+        console.log(`[SUCCESS] Canal ${channelId} connecté avec succès !`);
+        instance.status = 'connected';
+        instance.qr = null;
+    }
+});
 
     sock.ev.on('creds.update', saveCreds);
 
