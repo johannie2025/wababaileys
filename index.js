@@ -39,13 +39,20 @@ app.post('/channels', authMiddleware, async (req, res) => {
 });
 
 /** GET /channels/:id/status - État de connexion (utilisé par health() en PHP)[cite: 2] */
-app.get('/channels/:id/status', authMiddleware, (req, res) => {
-    const instance = sessions.get(req.params.id);
-    if (!instance) return res.status(404).json({ _ok: false, status: 'not_found' });
+/** GET /channels/:id/status */
+app.get('/channels/:id/status', authMiddleware, async (req, res) => {
+    let instance = sessions.get(req.params.id);
+    
+    // Si l'instance n'est pas en mémoire (après un reboot Render), on la réveille
+    if (!instance) {
+        console.log(`[REBOOT] Réveil automatique du canal : ${req.params.id}`);
+        // On récupère le webhook_url si ton PHP l'envoie, sinon null
+        instance = await getSession(req.params.id); 
+    }
     
     res.json({ 
         _ok: true, 
-        status: instance.status, // 'connected', 'connecting', 'disconnected'
+        status: instance.status, 
         phone: instance.sock?.user?.id || null 
     });
 });
