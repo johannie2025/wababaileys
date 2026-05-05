@@ -59,7 +59,9 @@ sock.ev.on('connection.update', async (update) => {
     if (qr) {
         console.log(`[QR] Nouveau code généré pour le canal : ${channelId}`);
         instance.qr = qr;
-        instance.status = 'connecting'; // On confirme qu'on attend le scan
+        // FIX : On passe au statut 'qr' pour que le frontend (connect.php)
+        // puisse sortir du mode placeholder et afficher l'image.
+        instance.status = 'qr'; 
     }
 
     // 2. Gestion des fermetures de connexion
@@ -76,36 +78,46 @@ sock.ev.on('connection.update', async (update) => {
         if (shouldReconnect) {
             console.log(`[RETRY] Tentative de reconnexion pour : ${channelId}...`);
             sessions.delete(channelId);
-            // Petit délai pour éviter de saturer le processeur de Render
+            // Délai de 3s pour ménager les ressources sur Render[cite: 3].
             setTimeout(() => getSession(channelId, webhookUrl), 3000);
         } else {
             console.log(`[LOGOUT] Déconnexion définitive pour : ${channelId}.`);
+            // Notifier le webhook PHP de la déconnexion.
+            if (webhookUrl) {
+                pushToWebhook(webhookUrl, { event: 'channel.disconnected', data: { channelId } });
+            }
         }
     } 
     
-    // 3. Connexion réussie[cite: 3]
+    // 3. Connexion réussie
     else if (connection === 'open') {
         console.log(`[SUCCESS] Canal ${channelId} connecté avec succès !`);
-        instance.status = 'connected';
+        // FIX : 'CONNECTED' en majuscule pour correspondre à la logique de UserController.php[cite: 1].
+        instance.status = 'CONNECTED'; 
         instance.qr = null;
+
+        // Optionnel : Notifier le serveur PHP immédiatement
+        if (webhookUrl) {
+            pushToWebhook(webhookUrl, { 
+                event: 'channel.connected', 
+                data: { channelId, phone: sock.user.id.split(':')[0] } 
+            });
+        }
     }
 });
 
-    sock.ev.on('creds.update', saveCreds);
+sock.ev.on('creds.update', saveCreds);
 
-    // Gestion des messages entrants (Correctement placé à l'intérieur du scope)[cite: 3]
-    sock.ev.on('messages.upsert', async (m) => {
-        if (m.type === 'notify' && webhookUrl) {
-            pushToWebhook(webhookUrl, {
-                channelId,
-                event: 'messages.upsert',
-                data: m
-            });
-        }
-    });
-
-    return instance;
-}
+// Gestion des messages entrants[cite: 3]
+sock.ev.on('messages.upsert', async (m) => {
+    if (m.type === 'notify' && webhookUrl) {
+        pushToWebhook(webhookUrl, {
+            channelId,
+            event: 'messages.upsert',
+            data: m
+        });
+    }
+});
 
 /**
  * Envoi de message texte compatible avec ton client PHP
