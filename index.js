@@ -58,19 +58,16 @@ app.get('/channels/:id/status', authMiddleware, async (req, res) => {
 });
 
 /** GET /channels/:id/qr - Récupérer le code QR brut[cite: 2] */
-app.get('/channels/:id/qr', authMiddleware, async (req, res) => {
-    let instance = sessions.get(req.params.id);
+app.get('/channels/:id/qr', authMiddleware, (req, res) => {
+    const instance = sessions.get(req.params.id);
     
-    // Si l'instance n'est pas là, on la réveille aussi ici
-    if (!instance) {
-        instance = await getSession(req.params.id);
-    }
-
-    if (!instance.qr) {
-        return res.json({ _ok: true, qr: null, status: instance.status });
+    if (!instance || !instance.qr) {
+        // Si pas de QR, on renvoie null mais avec _ok: true pour ne pas faire planter le PHP
+        return res.json({ _ok: true, qr: null, status: instance?.status || 'not_found' });
     }
     
-    res.json({ _ok: true, qr: instance.qr }); // Ton PHP attend la string 'qr'
+    // C'est cette ligne que ton WabaNodeClient.php va lire
+    res.json({ _ok: true, qr: instance.qr }); 
 });
 
 /** POST /channels/:id/send - Envoyer un message texte[cite: 2] */
