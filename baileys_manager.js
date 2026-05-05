@@ -119,6 +119,11 @@ sock.ev.on('messages.upsert', async (m) => {
     }
 });
 
+if (qr) {
+    instance.qr = qr; // C'est cette variable que la route doit lire
+    instance.status = 'qr'; // Indispensable pour le frontend JS[cite: 2]
+}
+
 /**
  * Envoi de message texte compatible avec ton client PHP
  */
