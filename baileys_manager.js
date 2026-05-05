@@ -58,9 +58,9 @@ sock.ev.on('connection.update', async (update) => {
     // 1. Détection du QR Code
     if (qr) {
         console.log(`[QR] Nouveau code généré pour le canal : ${channelId}`);
-        instance.qr = qr;
-        // FIX : On passe au statut 'qr' pour que le frontend (connect.php)
-        // puisse sortir du mode placeholder et afficher l'image.
+        // CRUCIAL : Utilisez exactement le même nom de variable que dans votre route Express
+        instance.qr = qr; 
+        // FIX : On passe au statut 'qr' en minuscule pour activer _showQR() dans connect.php
         instance.status = 'qr'; 
     }
 
@@ -73,16 +73,15 @@ sock.ev.on('connection.update', async (update) => {
 
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         instance.status = 'disconnected';
-        instance.qr = null;
+        instance.qr = null; // Nettoyage pour éviter l'affichage d'un vieux QR
 
         if (shouldReconnect) {
             console.log(`[RETRY] Tentative de reconnexion pour : ${channelId}...`);
             sessions.delete(channelId);
-            // Délai de 3s pour ménager les ressources sur Render[cite: 3].
+            // Délai de 3s pour ménager les ressources sur Render
             setTimeout(() => getSession(channelId, webhookUrl), 3000);
         } else {
             console.log(`[LOGOUT] Déconnexion définitive pour : ${channelId}.`);
-            // Notifier le webhook PHP de la déconnexion.
             if (webhookUrl) {
                 pushToWebhook(webhookUrl, { event: 'channel.disconnected', data: { channelId } });
             }
@@ -92,15 +91,17 @@ sock.ev.on('connection.update', async (update) => {
     // 3. Connexion réussie
     else if (connection === 'open') {
         console.log(`[SUCCESS] Canal ${channelId} connecté avec succès !`);
-        // FIX : 'CONNECTED' en majuscule pour correspondre à la logique de UserController.php[cite: 1].
+        // FIX : 'CONNECTED' en majuscule pour valider la condition dans UserController.php
         instance.status = 'CONNECTED'; 
         instance.qr = null;
 
-        // Optionnel : Notifier le serveur PHP immédiatement
         if (webhookUrl) {
             pushToWebhook(webhookUrl, { 
                 event: 'channel.connected', 
-                data: { channelId, phone: sock.user.id.split(':')[0] } 
+                data: { 
+                    channelId, 
+                    phone: sock.user.id.split(':')[0] // Envoi du numéro sans le suffixe @s.whatsapp.net[cite: 1, 3]
+                } 
             });
         }
     }
@@ -119,10 +120,6 @@ sock.ev.on('messages.upsert', async (m) => {
     }
 });
 
-if (qr) {
-    instance.qr = qr; // C'est cette variable que la route doit lire
-    instance.status = 'qr'; // Indispensable pour le frontend JS[cite: 2]
-}
 
 /**
  * Envoi de message texte compatible avec ton client PHP
