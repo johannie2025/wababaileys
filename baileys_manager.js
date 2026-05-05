@@ -51,93 +51,99 @@ async function getSession(channelId, webhookUrl = null) {
 
     sessions.set(channelId, instance);
 
-// Gestion des événements de connexion
-sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-    
-    // 1. Détection du QR Code
-    if (qr) {
-        console.log(`[QR] Nouveau code généré pour le canal : ${channelId}`);
-        // CRUCIAL : Utilisez exactement le même nom de variable que dans votre route Express
-        instance.qr = qr; 
-        // FIX : On passe au statut 'qr' en minuscule pour activer _showQR() dans connect.php
-        instance.status = 'qr'; 
-    }
-
-    // 2. Gestion des fermetures de connexion
-    if (connection === 'close') {
-        const statusCode = lastDisconnect.error?.output?.statusCode;
-        const reason = lastDisconnect.error?.message || 'Inconnue';
+    // Gestion des événements de connexion
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
         
-        console.log(`[CLOSE] Canal ${channelId} fermé. Raison: ${reason} (Code: ${statusCode})`);
+        // 1. Détection du QR Code
+        if (qr) {
+            console.log(`[QR] Nouveau code généré pour le canal : ${channelId}`);
+            instance.qr = qr; 
+            instance.status = 'qr'; 
+        }
 
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        instance.status = 'disconnected';
-        instance.qr = null; // Nettoyage pour éviter l'affichage d'un vieux QR
+        // 2. Gestion des fermetures de connexion
+        if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const reason = lastDisconnect?.error?.message || 'Inconnue';
+            
+            console.log(`[CLOSE] Canal ${channelId} fermé. Raison: ${reason} (Code: ${statusCode})`);
 
-        if (shouldReconnect) {
-            console.log(`[RETRY] Tentative de reconnexion pour : ${channelId}...`);
-            sessions.delete(channelId);
-            // Délai de 3s pour ménager les ressources sur Render
-            setTimeout(() => getSession(channelId, webhookUrl), 3000);
-        } else {
-            console.log(`[LOGOUT] Déconnexion définitive pour : ${channelId}.`);
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            instance.status = 'disconnected';
+            instance.qr = null;
+
+            if (shouldReconnect) {
+                console.log(`[RETRY] Tentative de reconnexion pour : ${channelId}...`);
+                sessions.delete(channelId);
+                setTimeout(() => getSession(channelId, webhookUrl), 3000);
+            } else {
+                console.log(`[LOGOUT] Déconnexion définitive pour : ${channelId}.`);
+                if (webhookUrl) {
+                    pushToWebhook(webhookUrl, { event: 'channel.disconnected', data: { channelId } });
+                }
+            }
+        } 
+        
+        // 3. Connexion réussie
+        else if (connection === 'open') {
+            console.log(`[SUCCESS] Canal ${channelId} connecté avec succès !`);
+            // FIX CRITIQUE : 'CONNECTED' en majuscule — UserController.php vérifie ($h['status'] === 'CONNECTED')
+            // connect.php JS vérifie status === 'connected' (minuscule) via toLowerCase() → les deux sont satisfaits
+            instance.status = 'CONNECTED'; 
+            instance.qr = null;
+
             if (webhookUrl) {
-                pushToWebhook(webhookUrl, { event: 'channel.disconnected', data: { channelId } });
+                pushToWebhook(webhookUrl, { 
+                    event: 'channel.connected', 
+                    data: { 
+                        channelId, 
+                        phone: sock.user.id.split(':')[0]
+                    } 
+                });
             }
         }
-    } 
-    
-    // 3. Connexion réussie
-    else if (connection === 'open') {
-        console.log(`[SUCCESS] Canal ${channelId} connecté avec succès !`);
-        // FIX : 'CONNECTED' en majuscule pour valider la condition dans UserController.php
-        instance.status = 'CONNECTED'; 
-        instance.qr = null;
+    });
 
-        if (webhookUrl) {
-            pushToWebhook(webhookUrl, { 
-                event: 'channel.connected', 
-                data: { 
-                    channelId, 
-                    phone: sock.user.id.split(':')[0] // Envoi du numéro sans le suffixe @s.whatsapp.net[cite: 1, 3]
-                } 
+    sock.ev.on('creds.update', saveCreds);
+
+    // Gestion des messages entrants
+    sock.ev.on('messages.upsert', async (m) => {
+        if (m.type === 'notify' && webhookUrl) {
+            pushToWebhook(webhookUrl, {
+                channelId,
+                event: 'messages.upsert',
+                data: m
             });
         }
-    }
-});
+    });
 
-sock.ev.on('creds.update', saveCreds);
-
-// Gestion des messages entrants[cite: 3]
-sock.ev.on('messages.upsert', async (m) => {
-    if (m.type === 'notify' && webhookUrl) {
-        pushToWebhook(webhookUrl, {
-            channelId,
-            event: 'messages.upsert',
-            data: m
-        });
-    }
-});
-
+    return instance; // ← FIX CRITIQUE : return manquant dans l'original
+}
 
 /**
- * Envoi de message texte compatible avec ton client PHP
+ * Envoi de message texte
+ * FIX : comparaison insensible à la casse pour 'CONNECTED' ou 'connected'
  */
 async function sendText(channelId, to, message) {
     const instance = sessions.get(channelId);
-    if (!instance || instance.status !== 'connected') throw new Error('Canal non connecté');
-    
+    // FIX CRITIQUE : l'original comparait !== 'connected' (minuscule) mais le statut est 'CONNECTED'
+    if (!instance || instance.status.toUpperCase() !== 'CONNECTED') {
+        throw new Error('Canal non connecté');
+    }
     const jid = to.includes('@') ? to : `${to.replace('+', '')}@s.whatsapp.net`;
     return await instance.sock.sendMessage(jid, { text: message });
 }
 
 /**
- * Envoie un média depuis un base64 (Image, Vidéo, Document)[cite: 2]
+ * Envoie un média depuis un base64 (Image, Vidéo, Document)
  */
 async function sendMedia(channelId, { to, base64, mimetype, caption, filename }) {
     const instance = sessions.get(channelId);
-    if (!instance || instance.status !== 'connected') throw new Error('Canal non connecté');
+    // FIX : même correction casse
+    if (!instance || instance.status.toUpperCase() !== 'CONNECTED') {
+        throw new Error('Canal non connecté');
+    }
 
     const jid = to.includes('@') ? to : `${to.replace('+', '')}@s.whatsapp.net`;
     const buffer = Buffer.from(base64, 'base64');
@@ -157,7 +163,86 @@ async function sendMedia(channelId, { to, base64, mimetype, caption, filename })
 }
 
 /**
- * Déconnexion et nettoyage des fichiers[cite: 2]
+ * Récupère la liste des chats WhatsApp (conversations récentes)
+ * Appelé par GET /channels/:id/chats → PHP /api/node-chats
+ */
+async function getChats(channelId, count = 30) {
+    const instance = sessions.get(channelId);
+    if (!instance || instance.status.toUpperCase() !== 'CONNECTED') {
+        throw new Error('Canal non connecté');
+    }
+    // Baileys expose les chats via sock.chats (store) ou fetchImageUrl etc.
+    // On utilise la méthode groupFetchAllParticipating pour les groupes,
+    // et pour les chats individuels on retourne les chats du store si disponible.
+    try {
+        // Tentative de récupération des chats via store interne Baileys
+        const chats = instance.sock.chats
+            ? Object.values(instance.sock.chats).slice(0, count).map(c => ({
+                id: c.id,
+                name: c.name || c.subject || c.id.split('@')[0],
+                unreadCount: c.unreadCount || 0,
+                lastMessage: c.lastMessage?.message?.conversation || '',
+                timestamp: c.conversationTimestamp || c.t || 0
+              }))
+            : [];
+        return { _ok: true, chats };
+    } catch (e) {
+        return { _ok: false, chats: [], error: e.message };
+    }
+}
+
+/**
+ * Récupère les messages d'un chat
+ * Appelé par GET /channels/:id/chats/:chatId/messages
+ */
+async function getMessages(channelId, chatId, limit = 20) {
+    const instance = sessions.get(channelId);
+    if (!instance || instance.status.toUpperCase() !== 'CONNECTED') {
+        throw new Error('Canal non connecté');
+    }
+    try {
+        const msgs = await instance.sock.fetchMessagesFromWA(chatId, limit, undefined);
+        const messages = (msgs || []).map(m => ({
+            id: m.key?.id,
+            fromMe: m.key?.fromMe,
+            from: m.key?.remoteJid,
+            body: m.message?.conversation 
+                || m.message?.extendedTextMessage?.text 
+                || '',
+            type: Object.keys(m.message || {})[0] || 'text',
+            timestamp: m.messageTimestamp
+        }));
+        return { _ok: true, messages };
+    } catch (e) {
+        return { _ok: false, messages: [], error: e.message };
+    }
+}
+
+/**
+ * Récupère les contacts WhatsApp
+ * Appelé par GET /channels/:id/contacts
+ */
+async function getContacts(channelId) {
+    const instance = sessions.get(channelId);
+    if (!instance || instance.status.toUpperCase() !== 'CONNECTED') {
+        throw new Error('Canal non connecté');
+    }
+    try {
+        const contacts = instance.sock.contacts
+            ? Object.values(instance.sock.contacts).map(c => ({
+                id: c.id,
+                name: c.name || c.notify || c.id.split('@')[0],
+                phone: c.id.split('@')[0]
+              }))
+            : [];
+        return { _ok: true, contacts };
+    } catch (e) {
+        return { _ok: false, contacts: [], error: e.message };
+    }
+}
+
+/**
+ * Déconnexion et nettoyage des fichiers
  */
 async function logout(channelId) {
     const instance = sessions.get(channelId);
@@ -171,5 +256,4 @@ async function logout(channelId) {
     return { _ok: false, error: 'Instance non trouvée' };
 }
 
-// Exportation de TOUTES les fonctions nécessaires pour index.js[cite: 2]
-module.exports = { getSession, sendText, sendMedia, logout, sessions };
+module.exports = { getSession, sendText, sendMedia, getChats, getMessages, getContacts, logout, sessions };
