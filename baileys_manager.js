@@ -109,12 +109,30 @@ async function getSession(channelId, webhookUrl = null) {
 
     // Gestion des messages entrants
     sock.ev.on('messages.upsert', async (m) => {
-        if (m.type === 'notify' && webhookUrl) {
-            pushToWebhook(webhookUrl, {
-                channelId,
-                event: 'messages.upsert',
-                data: m
-            });
+        // Mettre en cache les messages de la session pour getMessages()
+        if (m.type === 'notify') {
+            if (!instance._msgCache) instance._msgCache = {};
+            for (const msg of (m.messages || [])) {
+                const chatId = msg.key?.remoteJid;
+                if (!chatId) continue;
+                if (!instance._msgCache[chatId]) instance._msgCache[chatId] = [];
+                // Enrichir avec pushName (nom du contact) et isGroup
+                if (msg.pushName) msg._pushName = msg.pushName;
+                msg._isGroup = chatId.endsWith('@g.us');
+                msg._senderJid = msg.key?.participant || msg.key?.remoteJid;
+                instance._msgCache[chatId].push(msg);
+                // Garder max 100 messages par chat en mémoire
+                if (instance._msgCache[chatId].length > 100) {
+                    instance._msgCache[chatId].shift();
+                }
+            }
+            if (webhookUrl) {
+                pushToWebhook(webhookUrl, {
+                    channelId,
+                    event: 'messages.upsert',
+                    data: m
+                });
+            }
         }
     });
 
@@ -168,60 +186,66 @@ async function sendMedia(channelId, { to, base64, mimetype, caption, filename })
  */
 async function getChats(channelId, count = 30) {
     const instance = sessions.get(channelId);
-    if (!instance || instance.status.toUpperCase() !== 'CONNECTED') {
-        throw new Error('Canal non connecté');
-    }
-    // Baileys expose les chats via sock.chats (store) ou fetchImageUrl etc.
-    // On utilise la méthode groupFetchAllParticipating pour les groupes,
-    // et pour les chats individuels on retourne les chats du store si disponible.
+    if (!instance) return { _ok: true, chats: [] };
     try {
-        // Tentative de récupération des chats via store interne Baileys
-        const chats = instance.sock.chats
-            ? Object.values(instance.sock.chats).slice(0, count).map(c => ({
-                id: c.id,
-                name: c.name || c.subject || c.id.split('@')[0],
-                unreadCount: c.unreadCount || 0,
-                lastMessage: c.lastMessage?.message?.conversation || '',
-                timestamp: c.conversationTimestamp || c.t || 0
-              }))
-            : [];
+        // Baileys ne maintient pas sock.chats sans makeInMemoryStore
+        // On reconstruit depuis le cache _msgCache de la session
+        const cache   = instance._msgCache || {};
+        const chatIds = Object.keys(cache);
+        const chats   = chatIds.slice(0, count).map(id => {
+            const msgs = cache[id];
+            const last = msgs[msgs.length - 1];
+            const body = last?.message?.conversation
+                      || last?.message?.extendedTextMessage?.text
+                      || (last?.message ? '[média]' : '');
+            return {
+                id:          id,
+                name:        id.split('@')[0],
+                unreadCount: msgs.filter(m => !m.key?.fromMe).length,
+                lastMessage: body,
+                timestamp:   typeof last?.messageTimestamp === 'object'
+                    ? Number(last.messageTimestamp) : (last?.messageTimestamp || 0)
+            };
+        }).sort((a, b) => b.timestamp - a.timestamp);
         return { _ok: true, chats };
     } catch (e) {
-        return { _ok: false, chats: [], error: e.message };
+        return { _ok: true, chats: [] };
     }
 }
 
-/**
- * Récupère les messages d'un chat
- * Appelé par GET /channels/:id/chats/:chatId/messages
- */
+
 async function getMessages(channelId, chatId, limit = 20) {
     const instance = sessions.get(channelId);
-    if (!instance || instance.status.toUpperCase() !== 'CONNECTED') {
-        throw new Error('Canal non connecté');
-    }
+    // Sans makeInMemoryStore, Baileys ne stocke pas l'historique
+    // On retourne le cache session si dispo, sinon [] => fallback DB côté PHP
     try {
-        const msgs = await instance.sock.fetchMessagesFromWA(chatId, limit, undefined);
-        const messages = (msgs || []).map(m => ({
-            id: m.key?.id,
-            fromMe: m.key?.fromMe,
-            from: m.key?.remoteJid,
-            body: m.message?.conversation 
-                || m.message?.extendedTextMessage?.text 
-                || '',
-            type: Object.keys(m.message || {})[0] || 'text',
-            timestamp: m.messageTimestamp
+        if (!instance) return { _ok: true, messages: [] };
+        const sessionMsgs = instance._msgCache?.[chatId] || [];
+        const messages = sessionMsgs.slice(-limit).map(m => ({
+            id:       m.key?.id,
+            fromMe:   m.key?.fromMe || false,
+            from:     m.key?.remoteJid,
+            body:       m.message?.conversation
+                     || m.message?.extendedTextMessage?.text
+                     || m.message?.imageMessage?.caption
+                     || m.message?.videoMessage?.caption
+                     || '',
+            hasMedia:   !!(m.message?.imageMessage || m.message?.videoMessage
+                        || m.message?.audioMessage || m.message?.documentMessage),
+            type:       Object.keys(m.message || {})[0] || 'text',
+            senderName: m._pushName || m.pushName || '',
+            senderId:   m._senderJid || '',
+            isGroup:    m._isGroup || false,
+            timestamp:  typeof m.messageTimestamp === 'object'
+                ? Number(m.messageTimestamp) : (m.messageTimestamp || 0)
         }));
         return { _ok: true, messages };
     } catch (e) {
-        return { _ok: false, messages: [], error: e.message };
+        return { _ok: true, messages: [] };
     }
 }
 
-/**
- * Récupère les contacts WhatsApp
- * Appelé par GET /channels/:id/contacts
- */
+
 async function getContacts(channelId) {
     const instance = sessions.get(channelId);
     if (!instance || instance.status.toUpperCase() !== 'CONNECTED') {
