@@ -3,7 +3,7 @@ const { Worker } = require('bullmq');
 const redis      = require('../utils/redisClient');
 const wm         = require('../core/baileysManager');
 
-const QUEUE = 'wise:send';
+const QUEUE = 'wise-send';
 
 function initWorker() {
   const worker = new Worker(QUEUE, async job => {
